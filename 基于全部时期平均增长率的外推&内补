@@ -1,0 +1,219 @@
+global var_round "  " //后续需要四舍五入取整处理的变量 
+
+global var_conti "  " //后续可视为连续值的变量
+
+
+**# 平均增长率插补var_round、var_conti
+
+*================================================================
+* 变量缺失值填补：基于平均增长率向前/向后外推
+* 面板结构：stkid（个体）、year（年份）
+*================================================================
+
+clear all
+sort stkid year
+capture xtset stkid year
+
+* 创建填补副本，保留原始变量
+foreach var of varlist $var_round {
+    clonevar `var'_imp = `var'
+    label var `var'_imp "`var'（已填补）"
+}
+
+*================================================================
+* 核心循环：逐企业 × 逐变量
+*================================================================
+qui levelsof stkid, local(id_list)
+
+foreach id of local id_list {
+    foreach var of varlist $var_round {
+
+        * Step 1：获取有效（非缺失）年份列表
+        qui levelsof year if stkid == `id' & !missing(`var'), local(obs_yrs)
+        local nobs = wordcount("`obs_yrs'")
+
+        * 少于2个有效值无法计算增长率，跳过
+        if `nobs' < 2 {
+            continue
+        }
+
+        * Step 2：确定窗口长度
+        if `nobs' >= 5 {
+            local ww = 3
+        }
+        else {
+            local ww = `nobs'
+        }
+
+        *============================================================
+        * A. 向前外推：末尾 ww 个有效观测计算增长率
+        *    向前填补最后一个有效年之后的缺失值
+        *============================================================
+        local sum_gr_a = 0
+        local cnt_gr_a = 0
+        local gr_ok_a  = 1
+        local y_prev_a = .
+        local v_prev_a = .
+
+        local st_a = `nobs' - `ww' + 1
+
+        forval k = `st_a'/`nobs' {
+            local yk_a : word `k' of `obs_yrs'
+            qui sum `var' if stkid == `id' & year == `yk_a'
+            local vk_a = r(mean)
+
+            if `y_prev_a' != . {
+                if `v_prev_a' == 0 {
+                    local gr_ok_a = 0
+                    continue, break
+                }
+                local dy_a     = `yk_a' - `y_prev_a'
+                local sum_gr_a = `sum_gr_a' + (`vk_a' - `v_prev_a') / (`v_prev_a' * `dy_a')
+                local cnt_gr_a = `cnt_gr_a' + 1
+            }
+
+            local y_prev_a = `yk_a'
+            local v_prev_a = `vk_a'
+        }
+
+        if `gr_ok_a' == 1 & `cnt_gr_a' > 0 {
+            local gr_fwd = `sum_gr_a' / `cnt_gr_a'
+
+            * 锚点：最后一个有效年份及其值
+            local y_last : word `nobs' of `obs_yrs'
+            qui sum `var' if stkid == `id' & year == `y_last'
+            local v_last = r(mean)
+
+            * 对最后有效年之后的缺失年份向前外推
+            qui levelsof year if stkid == `id' & year > `y_last' & missing(`var'), local(fwd_yrs)
+
+            foreach yr_f of local fwd_yrs {
+                local dy_f  = `yr_f' - `y_last'
+                local vnew  = `v_last' * (1 + `gr_fwd')^`dy_f'
+
+                * 符号变化则跳过（正转负、负转正、结果为零均不填）
+                if `v_last' * `vnew' <= 0 {
+                    continue
+                }
+
+                qui replace `var'_imp = `vnew' ///
+                    if stkid == `id' & year == `yr_f' & missing(`var')
+            }
+        }
+
+        *============================================================
+        * B. 向后外推：前 ww 个有效观测计算增长率
+        *    向后填补第一个有效年之前的缺失值
+        *============================================================
+        local sum_gr_b = 0
+        local cnt_gr_b = 0
+        local gr_ok_b  = 1
+        local y_prev_b = .
+        local v_prev_b = .
+
+        forval k = 1/`ww' {
+            local yk_b : word `k' of `obs_yrs'
+            qui sum `var' if stkid == `id' & year == `yk_b'
+            local vk_b = r(mean)
+
+            if `y_prev_b' != . {
+                if `v_prev_b' == 0 {
+                    local gr_ok_b = 0
+                    continue, break
+                }
+                local dy_b     = `yk_b' - `y_prev_b'
+                local sum_gr_b = `sum_gr_b' + (`vk_b' - `v_prev_b') / (`v_prev_b' * `dy_b')
+                local cnt_gr_b = `cnt_gr_b' + 1
+            }
+
+            local y_prev_b = `yk_b'
+            local v_prev_b = `vk_b'
+        }
+
+        if `gr_ok_b' == 1 & `cnt_gr_b' > 0 {
+            local gr_bwd = `sum_gr_b' / `cnt_gr_b'
+
+            * 锚点：第一个有效年份及其值
+            local y_first : word 1 of `obs_yrs'
+            qui sum `var' if stkid == `id' & year == `y_first'
+            local v_first = r(mean)
+
+            * 对第一有效年之前的缺失年份向后外推
+            qui levelsof year if stkid == `id' & year < `y_first' & missing(`var'), local(bwd_yrs)
+
+            foreach yr_b of local bwd_yrs {
+                local dy_b2 = `y_first' - `yr_b'
+                local denom = (1 + `gr_bwd')^`dy_b2'
+
+                if `denom' == 0 {
+                    continue
+                }
+
+                local vnew = `v_first' / `denom'
+
+                * 符号变化则跳过
+                if `v_first' * `vnew' <= 0 {
+                    continue
+                }
+
+                qui replace `var'_imp = `vnew' ///
+                    if stkid == `id' & year == `yr_b' & missing(`var')
+            }
+        }
+
+        *============================================================
+        * C. 内部插值：首尾有效年之间的缺失值
+        *============================================================
+        local y_first_c : word 1      of `obs_yrs'
+        local y_last_c  : word `nobs' of `obs_yrs'
+
+        qui count if stkid == `id' & year > `y_first_c' & year < `y_last_c' & missing(`var')
+        if r(N) == 0 {
+            continue
+        }
+
+        qui levelsof year if stkid == `id' & year > `y_first_c' & year < `y_last_c' & missing(`var'), local(int_yrs)
+
+        foreach yr_i of local int_yrs {
+            * 找紧邻的前一个原始有效年
+            qui sum year if stkid == `id' & year < `yr_i' & !missing(`var')
+            if r(N) == 0 {
+                continue
+            }
+            local ya = r(max)
+            qui sum `var' if stkid == `id' & year == `ya'
+            local va = r(mean)
+
+            * 找紧邻的后一个原始有效年
+            qui sum year if stkid == `id' & year > `yr_i' & !missing(`var')
+            if r(N) == 0 {
+                continue
+            }
+            local yb = r(min)
+            qui sum `var' if stkid == `id' & year == `yb'
+            local vb = r(mean)
+
+            if `va' == 0 {
+                continue
+            }
+
+            * 用 ya→yb 的年化增长率在 yr_i 处插值
+            local dy_ab  = `yb' - `ya'
+            local gr_int = (`vb' - `va') / (`va' * `dy_ab')
+            local dy_ai  = `yr_i' - `ya'
+            local vnew   = `va' * (1 + `gr_int')^`dy_ai'
+
+            * 符号变化则跳过
+            if `va' * `vnew' <= 0 {
+                continue
+            }
+
+            qui replace `var'_imp = `vnew' ///
+                if stkid == `id' & year == `yr_i' & missing(`var')
+        }
+
+    }   // end foreach var
+}       // end foreach id
+
+di as result ">>> 填补完成，新变量：aa_imp  bb_imp  cc_imp  dd_imp  ee_imp"
+
