@@ -1,0 +1,140 @@
+**# 最近年插补var_same
+
+*================================================================
+* 变量缺失值填补：使用最近前一年或后一年数据填补
+* 面板结构：stkid（企业）、year（年份）
+*
+* 规则：
+*   1. 向前填补（最后有效年之后）：用最近的前一年值
+*   2. 向后填补（第一有效年之前）：用最近的后一年值
+*   3. 内部插补（首尾之间空缺）：缺失年份距前一年和后一年
+*      哪个更近就用哪个；距离相等时优先用前一年
+*================================================================
+
+sort stkid year
+
+* 创建填补副本，保留原始变量不变
+foreach var of varlist $var_same {
+    clonevar `var'_imp = `var'
+    label var `var'_imp "`var'（已填补）"
+}
+
+*================================================================
+* 核心循环：逐企业 × 逐变量
+*================================================================
+qui levelsof stkid, local(id_list)
+
+foreach id of local id_list {
+    foreach var of varlist $var_same  {
+
+        * Step 1：获取该企业-变量的有效（非缺失）年份
+        qui levelsof year if stkid == `id' & !missing(`var'), local(obs_yrs)
+        local nobs = wordcount("`obs_yrs'")
+
+        * 没有任何有效值则跳过
+        if `nobs' == 0 {
+            continue
+        }
+
+        * 记录第一个和最后一个有效年
+        local y_first : word 1      of `obs_yrs'
+        local y_last  : word `nobs' of `obs_yrs'
+
+        *============================================================
+        * A. 向前填补：最后有效年之后的缺失值
+        *    逐年向后，每次用上一年（已填补）的值
+        *============================================================
+        qui levelsof year if stkid == `id' & year > `y_last' & missing(`var'), ///
+            local(fwd_yrs)
+
+        foreach yr_f of local fwd_yrs {
+            * 找紧邻的前一年（可能是刚刚填补进去的值）
+            qui sum `var'_imp if stkid == `id' & year == `yr_f' - 1
+            if r(N) == 0 {
+                continue
+            }
+            local vnew = r(mean)
+
+            qui replace `var'_imp = `vnew' ///
+                if stkid == `id' & year == `yr_f' & missing(`var'_imp)
+        }
+
+        *============================================================
+        * B. 向后填补：第一有效年之前的缺失值
+        *    逐年向前，每次用下一年（已填补）的值
+        *============================================================
+        qui levelsof year if stkid == `id' & year < `y_first' & missing(`var'), ///
+            local(bwd_yrs_raw)
+
+        * 倒序处理（从靠近 y_first 的年份往更早填）
+        local bwd_yrs ""
+        local nb = wordcount("`bwd_yrs_raw'")
+        forval k = `nb'(-1)1 {
+            local yk : word `k' of `bwd_yrs_raw'
+            local bwd_yrs "`bwd_yrs' `yk'"
+        }
+
+        foreach yr_b of local bwd_yrs {
+            * 找紧邻的后一年（可能是刚刚填补进去的值）
+            qui sum `var'_imp if stkid == `id' & year == `yr_b' + 1
+            if r(N) == 0 {
+                continue
+            }
+            local vnew = r(mean)
+
+            qui replace `var'_imp = `vnew' ///
+                if stkid == `id' & year == `yr_b' & missing(`var'_imp)
+        }
+
+        *============================================================
+        * C. 内部插补：首尾有效年之间的缺失值
+        *    哪年距前一个有效年更近用前值，距后一个有效年更近用后值
+        *    距离相等时优先用前值
+        *============================================================
+        qui count if stkid == `id' & year > `y_first' & year < `y_last' ///
+            & missing(`var')
+        if r(N) == 0 {
+            continue
+        }
+
+        qui levelsof year if stkid == `id' & year > `y_first' & year < `y_last' ///
+            & missing(`var'), local(int_yrs)
+
+        foreach yr_i of local int_yrs {
+
+            * 找紧邻前一个原始有效年及其值
+            qui sum year if stkid == `id' & year < `yr_i' & !missing(`var')
+            if r(N) == 0 {
+                continue
+            }
+            local ya  = r(max)
+            qui sum `var' if stkid == `id' & year == `ya'
+            local va  = r(mean)
+            local da  = `yr_i' - `ya'    // 距前有效年的距离
+
+            * 找紧邻后一个原始有效年及其值
+            qui sum year if stkid == `id' & year > `yr_i' & !missing(`var')
+            if r(N) == 0 {
+                continue
+            }
+            local yb  = r(min)
+            qui sum `var' if stkid == `id' & year == `yb'
+            local vb  = r(mean)
+            local db  = `yb' - `yr_i'    // 距后有效年的距离
+
+            * 距离比较：更近的一方赋值；相等时优先前值
+            if `da' <= `db' {
+                local vnew = `va'
+            }
+            else {
+                local vnew = `vb'
+            }
+
+            qui replace `var'_imp = `vnew' ///
+                if stkid == `id' & year == `yr_i' & missing(`var'_imp)
+        }
+
+    }   // end foreach var
+}       // end foreach id
+
+di as result ">>> 填补完成，新变量：_imp"
