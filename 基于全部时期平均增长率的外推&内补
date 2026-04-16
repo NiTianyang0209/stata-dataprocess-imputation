@@ -215,5 +215,5 @@ foreach id of local id_list {
     }   // end foreach var
 }       // end foreach id
 
-di as result ">>> 填补完成，新变量：aa_imp  bb_imp  cc_imp  dd_imp  ee_imp"
+di as result ">>> 填补完成，新变量后缀：_imp"
 
