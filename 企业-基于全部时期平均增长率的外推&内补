@@ -1,9 +1,6 @@
-global var_round "  " //后续需要四舍五入取整处理的变量 
-
 global var_conti "  " //后续可视为连续值的变量
 
-
-**# 平均增长率插补var_round、var_conti
+**# 平均增长率插补var_conti
 
 *================================================================
 * 变量缺失值填补：基于平均增长率向前/向后外推
@@ -15,7 +12,7 @@ sort stkid year
 capture xtset stkid year
 
 * 创建填补副本，保留原始变量
-foreach var of varlist $var_round {
+foreach var of varlist $var_conti {
     clonevar `var'_imp = `var'
     label var `var'_imp "`var'（已填补）"
 }
@@ -26,7 +23,7 @@ foreach var of varlist $var_round {
 qui levelsof stkid, local(id_list)
 
 foreach id of local id_list {
-    foreach var of varlist $var_round {
+    foreach var of varlist $var_conti {
 
         * Step 1：获取有效（非缺失）年份列表
         qui levelsof year if stkid == `id' & !missing(`var'), local(obs_yrs)
