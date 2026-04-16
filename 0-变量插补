@@ -1,0 +1,2 @@
+**# 数据缺失插补 
+by id: ipolate var year, gen(new_var) // 加入选项epolate为线性外推 
