@@ -1,0 +1,6 @@
+global var_roundup " "
+
+**# 批量统一进行四舍五入 
+foreach var of varlist $var_roundup {
+    replace `var' = round(`var')
+}
