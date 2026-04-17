@@ -1,0 +1,4 @@
+*.do linguist-language=Stata
+*.ado linguist-language=Stata
+*.log linguist-vendored
+*.dta linguist-vendored
